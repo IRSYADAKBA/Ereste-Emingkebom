@@ -72,6 +72,11 @@ Terdapat pengecualian dari rumus di atas, yaitu paket dengan flag SYN atau FIN d
 
 Contohnya pada proses three-way handshake di bagian [0.2](#02-three-way-handshake-protokol-tcp): client mengirim SYN dengan seq = m. Walaupun paket SYN ini tidak membawa data, server tetap membalas dengan ack = m + 1 dan bukan ack = m, karena SYN-nya sendiri dihitung sebagai 1 byte. Hal yang sama berlaku untuk FIN saat koneksi ditutup, apabila sender mengirim FIN dengan seq = x, maka balasan ACK-nya adalah ack = x + 1.
 
+```
+# Mengaktifkan NAT (Masquerade) ke arah antarmuka internet (eth0)
+iptables -t nat -A POSTROUTING -j MASQUERADE -s 10.147.0.0/16 -o eth0
+```
+
 ### 0.4 Retransmisi dan ACK Duplikat
 
 Ketika mengirimkan paket, terdapat kemungkinan bahwa paket tersebut akan mengalami _packet loss_ karena masalah koneksi internet dan lain sebagainya. Pada TCP, apabila sebuah paket hilang, hal ini dapat dideteksi melalui dua cara, yaitu _Retransmission Timeout_ dan _Duplicate ACK_.
@@ -80,11 +85,58 @@ Ketika mengirimkan paket, terdapat kemungkinan bahwa paket tersebut akan mengala
 
   Setiap kali mengirimkan _segment_, _sender_ akan menjalankan sebuah _timer_. Apabila `ACK` untuk _segment_ tersebut tidak diterima sampai _timer_ habis, _segment_ dianggap hilang dan akan dikirim ulang. Nilai RTO dihitung berdasarkan _Round Trip Time_ (RTT), yaitu waktu yang dibutuhkan paket untuk pergi dan kembali. Semakin lambat dan tidak stabil jaringan, semakin besar pula nilai RTO-nya.
 
+```
+{
+  "Dhcp4": {
+    "interfaces-config": { "interfaces": ["eth0"] },
+    "lease-database": { "type": "memfile", "persist": true, "name": "/var/lib/kea/kea-leases4.csv" },
+    "valid-lifetime": 3600,
+    "subnet4": [
+      {
+        "id": 1,
+        "subnet": "[IP Prefix].3.0/24",
+        "pools": [ { "pool": "pool range start - pool range end" } ],
+        "option-data": [
+          { "name": "routers", "data": "IP gateway Victoria" },
+          { "name": "domain-name-servers", "data": "8.8.8.8" }
+        ]
+      }
+    ]
+  }
+}
+```
+
 - **Fast Retransmit (Duplicate ACK)**
 
   Menunggu _timer_ habis tentu membutuhkan waktu yang cukup lama. Maka dari itu, TCP memiliki mekanisme lain yang lebih cepat. Misalnya _segment_ `seq=101` hilang, namun _segment_ setelahnya (`201`, `301`, `401`) berhasil diterima. Karena _byte_ `101` belum diterima, penerima akan terus membalas dengan `ACK` yang sama, yaitu `ACK 101`. `ACK` yang dikirim berulang ini disebut _duplicate ACK_ (dup `ACK`).
 
   Ketika _sender_ menerima 3 _duplicate ACK_, _segment_ tersebut dianggap hilang dan langsung dikirim ulang tanpa menunggu RTO habis. Mekanisme ini disebut _fast retransmit_.
+
+
+```
+{
+  "Dhcp4": {
+    "interfaces-config": { "interfaces": ["eth0"] },
+    "lease-database": { "type": "memfile", "persist": true, "name": "/var/lib/kea/kea-leases4.csv" },
+    "valid-lifetime": 3600,
+    "subnet4": [
+      {
+        "id": 1,
+        "subnet": "[IP Prefix].4.0/24",
+        "pools": [ { "pool": "pool range start - pool range end" } ],
+        "option-data": [
+          { "name": "routers", "data": "IP gateway Yan" },
+          { "name": "domain-name-servers", "data": "8.8.8.8" }
+        ],
+        "reservations": [
+          { "hw-address": "<MAC eth0 Laterano>", "ip-address": "[IP Prefix].4.15" }
+        ]
+      }
+    ]
+  }
+}
+
+```
 
 ### 0.5 TCP Congestion Control
 
@@ -107,6 +159,30 @@ Selain Reno, terdapat beberapa algoritma _congestion control_ lain yang disediak
 | CUBIC | Algoritma bawaan Linux. Pertambahan `cwnd` dihitung menggunakan fungsi kubik terhadap waktu sejak _packet loss_ terakhir. Ketika terjadi _packet loss_, `cwnd` diturunkan menjadi sekitar 70% dari nilai sebelumnya. |
 | BBR | Algoritma yang tidak bergantung pada _packet loss_. BBR mengukur _bandwidth_ maksimum dan RTT minimum, kemudian menyesuaikan kecepatan _sender_ berdasarkan hasil pengukuran tersebut. |
 
+```
+#!/bin/sh
+echo "nameserver 8.8.8.8" > /etc/resolv.conf
+
+apk update
+apk add kea
+
+# Menyiapkan folder untuk Kea DHCP
+mkdir -p /run/kea
+mkdir -p /var/lib/kea
+
+# Mengosongkan dan mengedit file konfigurasi Kea DHCP4
+> /etc/kea/kea-dhcp4.conf
+nano /etc/kea/kea-dhcp4.conf
+
+# Mengecek interface eth0
+ip link show eth0
+
+# Menjalankan atau merestart Kea DHCP Server di latar belakang
+service kea-dhcp4-server restart
+pkill kea-dhcp4
+kea-dhcp4 -c /etc/kea/kea-dhcp4.conf &
+```
+
 ## 1. Tools Analisis dan Simulasi Jaringan
 
 Setelah memahami teori di atas, kita akan mencoba mengamati perilaku TCP dan UDP secara langsung. Pada bagian ini, kita akan menggunakan beberapa _tools_ berikut.
@@ -118,6 +194,18 @@ Setelah memahami teori di atas, kita akan mencoba mengamati perilaku TCP dan UDP
 | `tc qdisc` | Mensimulasikan kondisi jaringan, seperti _delay_, _packet loss_, dan pembatasan _bandwidth_ |
 | `ip tcp_metrics` dan `sysctl` | Mengatur perilaku TCP pada _kernel_ |
 | Wireshark / termshark | Menganalisis hasil _capture_ paket |
+
+```
+ip link show eth0
+
+kea-dhcp4 -c /etc/kea/kea-dhcp4.conf &
+
+pkill kea-dhcp4
+kea-dhcp4 -c /etc/kea/kea-dhcp4.conf &
+
+mkdir -p /run/kea
+mkdir -p /var/lib/kea {Yan}
+```
 
 ### 1.0 Persiapan Topologi
 
@@ -203,7 +291,20 @@ iperf3 -s
 Jalankan perintah berikut pada Loguetown.
 
 ```sh
-iperf3 -c 10.40.2.2 -t 5
+# Meminta IP dari DHCP Server
+udhcpc -i eth0
+
+# Instalasi Python3 dan persiapan direktori web
+apk add python3
+mkdir -p /root/myscripts/myweb
+nano /root/myscripts/start_http.sh
+```
+
+```
+#!/bin/sh
+mkdir -p myweb
+cd myweb 
+python3 -m http.server 9999 -d /root/myscripts/myweb
 ```
 
 Hasil pada _server_ Alabasta:  
@@ -256,13 +357,20 @@ Berikut adalah _output_ `tcpdump` pada Foosha.
 
 Filter dapat dituliskan di akhir perintah dan dapat digabungkan menggunakan `and`, `or`, dan `not`.
 
-```sh
-tcpdump -i eth2 -nn host 10.40.2.2
-tcpdump -i eth2 -nn tcp port 5201
-tcpdump -i eth2 -nn udp
-tcpdump -i eth2 -nn icmp
-tcpdump -i eth2 -nn 'tcp[tcpflags] & tcp-syn != 0'
-tcpdump -i eth2 -nn -c 100 -w /root/iperf.pcap port 5201
+
+```
+chmod +x /root/myscripts/start_http.sh
+
+cd /root/myscripts/myweb
+dd if=/dev/random of=tes1000.bin bs=1 count=1000
+dd if=/dev/random of=tes10000.bin bs=10 count=1000
+dd if=/dev/random of=tes50000.bin bs=50 count=1000
+dd if=/dev/random of=tes5M.bin bs=5000 count=1000
+
+cd /root/myscripts
+./start_http.sh
+# atau jalankan di background:
+./start_http.sh &
 ```
 
 ### 1.3 Network Simulation dengan tc qdisc
@@ -285,6 +393,15 @@ tc qdisc <add|replace|change|del|show> dev <interface> root <jenis qdisc> <param
 - `dev <interface>`: _interface_ yang akan diatur, misalnya `eth2`.
 - `root`: qdisc dipasang sebagai qdisc utama pada _interface_ tersebut.
 - `<jenis qdisc>`: jenis qdisc yang digunakan, misalnya `netem` atau `tbf`.
+
+```
+tc qdisc del dev eth1 root
+tc qdisc del dev eth2 root
+tc qdisc add dev eth1 root netem loss 1%
+tc qdisc add dev eth2 root netem loss 1%
+tc qdisc show dev eth1
+tc qdisc show dev eth2
+```
 
 #### b. `tc qdisc add`
 
@@ -375,6 +492,16 @@ tc -s qdisc show dev eth2
 ### 1.4 TCP Metrics dan Algoritma Congestion Control
 
 Terdapat dua pengaturan _kernel_ Linux yang perlu diperhatikan, yaitu TCP metrics dan algoritma _congestion control_.
+
+```
+ip tcp_metrics flush
+sysctl -w net.ipv4.tcp_no_metrics_save=1
+sysctl -w net.ipv4.tcp_congestion_control=cubic
+sysctl net.ipv4.tcp_congestion_control
+
+#dijalankan di columbia
+curl -o /dev/null -s -w "size=%{size_download}B speed=%{speed_download}B/s total=%{time_total}s\n" http://10.147.4.15:9999/tes5M.bin
+```
 
 #### `ip tcp_metrics` dan `tcp_no_metrics_save`
 
@@ -754,6 +881,12 @@ atau dengan memastikan `net.ipv4.ip_forward=1` ada (biasanya di-_comment_) di da
 
 ```
 sysctl -p
+```
+
+```
+curl -o /dev/null -s -w "size=%{size_download}B speed=%{speed_download}B/s total=%{time_total}s\n" http://10.147.4.15:9999/tes1000.bin
+curl -o /dev/null -s -w "size=%{size_download}B speed=%{speed_download}B/s total=%{time_total}s\n" http://10.147.4.15:9999/tes10000.bin
+curl -o /dev/null -s -w "size=%{size_download}B speed=%{speed_download}B/s total=%{time_total}s\n" http://10.147.4.15:9999/tes5M.bin
 ```
 
 ### 2.5 Referensi
